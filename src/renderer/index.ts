@@ -1,8 +1,9 @@
 type Point2D = [number, number];
-type Point3D = [number, number, number];
+type Vector3 = [number, number, number];
+
 type RGB = [number, number, number];
 type Sphere = {
-  C: Point3D;
+  C: Vector3;
   r: number;
   color: RGB;
   specular: number;
@@ -16,13 +17,13 @@ type AmbientLight = {
 type PointLight = {
   type: "point";
   intensity: number;
-  position: Point3D;
+  position: Vector3;
 };
 
 type DirectionalLight = {
   type: "directional";
   intensity: number;
-  direction: number[];
+  direction: Vector3;
 };
 
 type Light = AmbientLight | PointLight | DirectionalLight;
@@ -30,6 +31,10 @@ type Light = AmbientLight | PointLight | DirectionalLight;
 type Scene = {
   spheres: Sphere[];
   lights: Light[];
+};
+type ClosestIntersection = {
+  closestIntersection: Sphere | null;
+  closestT: number;
 };
 export class Renderer {
   private scene: Scene = {
@@ -90,7 +95,7 @@ export class Renderer {
   }
 
   render() {
-    const O: Point3D = [0, 0, 0]; // camera
+    const O: Vector3 = [0, 0, 0]; // camera
     const [cw, ch] = [this.canvas.width, this.canvas.height];
 
     // iterate canvas
@@ -105,32 +110,21 @@ export class Renderer {
     this.putImageData();
   }
 
-  canvasToViewport(x: number, y: number): Point3D {
+  canvasToViewport(x: number, y: number): Vector3 {
     const [cw, ch] = [this.canvas.width, this.canvas.height];
-    const D: Point3D = [(x * this.vw) / cw, (y * this.vh) / ch, this.vd];
+    const D: Vector3 = [(x * this.vw) / cw, (y * this.vh) / ch, this.vd];
 
     return D;
   }
 
   traceRay(
-    origin: Point3D,
-    viewportPoint: Point3D,
+    origin: Vector3,
+    viewportPoint: Vector3,
     tMin: number,
     tMax: number
   ) {
-    let closestT = Infinity;
-    let closestSphere: Sphere | null = null;
-
-    for (let sphere of this.scene.spheres) {
-      // ray can intersect sphere in 0, 1 or 2 points P1 = (O + t1D), P2 = (O + t2D)
-      const intersects = this.intersectRaySphere(origin, viewportPoint, sphere);
-      for (let t of intersects) {
-        if (t > tMin && t < tMax && t < closestT) {
-          closestT = t;
-          closestSphere = sphere;
-        }
-      }
-    }
+    let { closestIntersection: closestSphere, closestT }: ClosestIntersection =
+      this.closestIntersection(origin, viewportPoint, tMin, tMax);
 
     if (closestSphere == null) {
       return this.backgroundColor;
@@ -139,7 +133,7 @@ export class Renderer {
     const intersection = this.add(
       origin,
       this.multiplyByScalar(viewportPoint, closestT)
-    ) as Point3D;
+    ) as Vector3;
 
     let normal = this.subtract(intersection, closestSphere.C);
     normal = this.multiplyByScalar(normal, 1 / this.length(normal));
@@ -155,13 +149,35 @@ export class Renderer {
     ) as RGB;
   }
 
+  closestIntersection(
+    origin: Vector3,
+    viewportPoint: Vector3,
+    tMin: number,
+    tMax: number
+  ): ClosestIntersection {
+    let closestT = Infinity;
+    let closestSphere: Sphere | null = null;
+
+    for (let sphere of this.scene.spheres) {
+      // ray can intersect sphere in 0, 1 or 2 points P1 = (O + t1D), P2 = (O + t2D)
+      const intersects = this.intersectRaySphere(origin, viewportPoint, sphere);
+      for (let t of intersects) {
+        if (t > tMin && t < tMax && t < closestT) {
+          closestT = t;
+          closestSphere = sphere;
+        }
+      }
+    }
+    return { closestIntersection: closestSphere, closestT };
+  }
+
   intersectRaySphere(
-    origin: Point3D,
-    viewportPoint: Point3D,
+    origin: Vector3,
+    viewportPoint: Vector3,
     sphere: Sphere
   ): [number, number] {
     // solve quadratic equasion
-    const co = origin.map((p, i) => p - sphere.C[i]);
+    const co = origin.map((p, i) => p - sphere.C[i]) as Vector3;
 
     const a = this.dot(viewportPoint, viewportPoint);
     const b = this.dot(co, viewportPoint) * 2;
@@ -179,38 +195,52 @@ export class Renderer {
     return [t1, t2];
   }
 
-  computeLighting(point: Point3D, normal: number[], v: number[], s: number) {
+  computeLighting(point: Vector3, normal: Vector3, v: Vector3, s: number) {
     let i = 0.0; // base intensity
 
     for (let light of this.scene.lights) {
       if (light.type == "ambient") {
         i += light.intensity;
+        continue;
+      }
+
+      // light direction
+      let L: Vector3;
+      let [tMin, tMax] = [0.001, 1];
+      if (light.type == "point") {
+        // vector from point to light position
+        L = this.subtract(light.position, point);
       } else {
-        // light direction
-        let L: number[];
-        if (light.type == "point") {
-          // vector from point to light position
-          L = this.subtract(light.position, point);
-        } else {
-          // simply light direction
-          L = light.direction;
-        }
+        // simply light direction
+        L = light.direction;
+        tMax = Infinity;
+      }
 
-        const nDotL = this.dot(normal, L);
-        if (nDotL > 0) {
-          // intensity of diffused light depends on the angle
+      // shadow
+      const { closestIntersection } = this.closestIntersection(
+        point,
+        L as Vector3,
+        tMin,
+        tMax
+      );
+
+      if (closestIntersection != null) {
+        continue;
+      }
+
+      const nDotL = this.dot(normal, L);
+      if (nDotL > 0) {
+        // intensity of diffused light depends on the angle
+        i += (light.intensity * nDotL) / (this.length(normal) * this.length(L));
+      }
+
+      if (s != -1) {
+        const R = this.subtract(this.multiplyByScalar(normal, 2 * nDotL), L);
+        const rDotV = this.dot(R, v);
+        if (rDotV > 0) {
           i +=
-            (light.intensity * nDotL) / (this.length(normal) * this.length(L));
-        }
-
-        if (s != -1) {
-          const R = this.subtract(this.multiplyByScalar(normal, 2 * nDotL), L);
-          const rDotV = this.dot(R, v);
-          if (rDotV > 0) {
-            i +=
-              light.intensity *
-              Math.pow(rDotV / (this.length(R) * this.length(v)), s);
-          }
+            light.intensity *
+            Math.pow(rDotV / (this.length(R) * this.length(v)), s);
         }
       }
     }
@@ -218,36 +248,36 @@ export class Renderer {
     return i;
   }
 
-  dot(v1: number[], v2: number[]): number {
+  dot(v1: Vector3, v2: Vector3): number {
     if (v1.length != v2.length) {
       throw new Error("[dot]: vectors have different length");
     }
     return v1.map((p, i) => p * v2[i]).reduce((acc, v) => acc + v, 0);
   }
 
-  add(v1: number[], v2: number[]): number[] {
+  add(v1: Vector3, v2: Vector3): Vector3 {
     if (v1.length != v2.length) {
       throw new Error("[add]: vectors have different length");
     }
-    return v1.map((p, i) => p + v2[i]);
+    return v1.map((p, i) => p + v2[i]) as Vector3;
   }
 
-  subtract(v1: number[], v2: number[]) {
+  subtract(v1: Vector3, v2: Vector3): Vector3 {
     if (v1.length != v2.length) {
       throw new Error("[subtract]: vectors have different length");
     }
-    return v1.map((p, i) => p - v2[i]);
+    return v1.map((p, i) => p - v2[i]) as Vector3;
   }
 
-  subtractScalar(v1: number[], a: number) {
+  subtractScalar(v1: Vector3, a: number) {
     return v1.map((p) => p - a);
   }
 
-  multiplyByScalar(v1: number[], a: number) {
-    return v1.map((p) => p * a);
+  multiplyByScalar(v1: Vector3, a: number): Vector3 {
+    return v1.map((p) => p * a) as Vector3;
   }
 
-  length(v1: number[]): number {
+  length(v1: Vector3): number {
     return Math.sqrt(v1.reduce((acc, v) => acc + v * v, 0));
   }
 
