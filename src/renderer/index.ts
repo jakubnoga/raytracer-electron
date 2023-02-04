@@ -7,6 +7,7 @@ type Sphere = {
   r: number;
   color: RGB;
   specular: number;
+  reflective: number;
 };
 
 type AmbientLight = {
@@ -44,24 +45,28 @@ export class Renderer {
         r: 1,
         color: [255, 0, 0],
         specular: 500,
+        reflective: 0.2,
       },
       {
         C: [2, 0, 4],
         r: 1,
         color: [0, 0, 255],
         specular: 500,
+        reflective: 0.3,
       },
       {
         C: [-2, 0, 4],
         r: 1,
         color: [0, 255, 0],
         specular: 10,
+        reflective: 0.4,
       },
       {
         C: [0, -5001, 0],
         r: 5000,
         color: [255, 255, 0],
         specular: 1000,
+        reflective: 0.5,
       },
     ],
     lights: [
@@ -74,7 +79,7 @@ export class Renderer {
   private vh = 1;
   private vd = 1;
 
-  private backgroundColor: RGB = [255, 255, 255];
+  private backgroundColor: RGB = [0, 0, 0];
   private imageData: ImageData;
 
   static create(canvas: HTMLCanvasElement): Renderer {
@@ -121,8 +126,9 @@ export class Renderer {
     origin: Vector3,
     viewportPoint: Vector3,
     tMin: number,
-    tMax: number
-  ) {
+    tMax: number,
+    recursionDepth = 3
+  ): RGB {
     let { closestIntersection: closestSphere, closestT }: ClosestIntersection =
       this.closestIntersection(origin, viewportPoint, tMin, tMax);
 
@@ -138,15 +144,37 @@ export class Renderer {
     let normal = this.subtract(intersection, closestSphere.C);
     normal = this.multiplyByScalar(normal, 1 / this.length(normal));
 
-    return this.multiplyByScalar(
+    const negativeViewportPoint = this.multiplyByScalar(viewportPoint, -1);
+
+    const color = this.multiplyByScalar(
       closestSphere.color,
       this.computeLighting(
         intersection,
         normal,
-        this.multiplyByScalar(viewportPoint, -1),
+        negativeViewportPoint,
         closestSphere.specular
       )
-    ) as RGB;
+    );
+
+    // recursion limit
+    const r = closestSphere.reflective;
+    if (recursionDepth <= 0 || r <= 0) {
+      return color;
+    }
+
+    const nextRay = this.reflectRay(negativeViewportPoint, normal);
+    const reflectedColor = this.traceRay(
+      intersection,
+      nextRay,
+      0.001,
+      Infinity,
+      recursionDepth - 1
+    );
+
+    return this.add(
+      this.multiplyByScalar(color, 1 - r),
+      this.multiplyByScalar(reflectedColor, r)
+    );
   }
 
   closestIntersection(
@@ -235,7 +263,7 @@ export class Renderer {
       }
 
       if (s != -1) {
-        const R = this.subtract(this.multiplyByScalar(normal, 2 * nDotL), L);
+        const R = this.reflectRay(L, normal);
         const rDotV = this.dot(R, v);
         if (rDotV > 0) {
           i +=
@@ -246,6 +274,11 @@ export class Renderer {
     }
 
     return i;
+  }
+
+  private reflectRay(ray: Vector3, normal: Vector3) {
+    const nDotR = this.dot(normal, ray);
+    return this.subtract(this.multiplyByScalar(normal, 2 * nDotR), ray);
   }
 
   dot(v1: Vector3, v2: Vector3): number {
