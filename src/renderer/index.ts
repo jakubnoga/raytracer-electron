@@ -2,9 +2,18 @@ type Point2D = [number, number];
 type Vector3 = [number, number, number];
 
 type RGB = [number, number, number];
-type Sphere = {
+type Sphere = Surface & {
   C: Vector3;
   r: number;
+};
+
+type Triangle = Surface & {
+  a: Vector3;
+  b: Vector3;
+  c: Vector3;
+};
+
+type Surface = {
   color: RGB;
   specular: number;
   reflective: number;
@@ -32,53 +41,74 @@ type Light = AmbientLight | PointLight | DirectionalLight;
 type Scene = {
   spheres: Sphere[];
   lights: Light[];
+  triangles: Triangle[];
 };
 type ClosestIntersection = {
-  closestIntersection: Sphere | null;
+  closestIntersection: Sphere | Triangle | null;
   closestT: number;
+  closestNormal: Vector3 | null;
 };
 export class Renderer {
   private scene: Scene = {
     spheres: [
-      {
-        C: [0, -1, 3],
-        r: 1,
-        color: [255, 0, 0],
-        specular: 500,
-        reflective: 0.2,
-      },
-      {
-        C: [2, 0, 4],
-        r: 1,
-        color: [0, 0, 255],
-        specular: 500,
-        reflective: 0.3,
-      },
-      {
-        C: [-2, 0, 4],
-        r: 1,
-        color: [0, 255, 0],
-        specular: 10,
-        reflective: 0.4,
-      },
-      {
-        C: [0, -5001, 0],
-        r: 5000,
-        color: [255, 255, 0],
-        specular: 1000,
-        reflective: 0.5,
-      },
+      // {
+      //   C: [0, -1, 3],
+      //   r: 1,
+      //   color: [255, 0, 0],
+      //   specular: 500,
+      //   reflective: 0.2,
+      // },
+      // {
+      //   C: [2, 0, 4],
+      //   r: 1,
+      //   color: [0, 0, 255],
+      //   specular: 500,
+      //   reflective: 0.3,
+      // },
+      // {
+      //   C: [-2, 0, 4],
+      //   r: 1,
+      //   color: [0, 255, 0],
+      //   specular: 10,
+      //   reflective: 0.4,
+      // },
+      // {
+      //   C: [0, -5001, 0],
+      //   r: 5000,
+      //   color: [255, 255, 0],
+      //   specular: 1000,
+      //   reflective: 0.5,
+      // },
     ],
     lights: [
       { type: "ambient", intensity: 0.2 },
       { type: "point", intensity: 0.6, position: [2, 1, 0] },
       { type: "directional", intensity: 0.2, direction: [1, 4, 4] },
     ],
+    triangles: [
+      {
+        a: [0, .1, 2],
+        b: [.2, -.1, 2],
+        c: [-.2, -.1, 2],
+        color: [0, 255, 255],
+        specular: 500,
+        reflective: 0.3,
+      },
+      {
+        a: [0, .1, 2],
+        b: [.2, -.1, 2],
+        c: [.2, -.1, 40],
+        color: [0, 255, 255],
+        specular: 500,
+        reflective: 0.3,
+      },
+    ],
   };
   private vw = 1;
   private vh = 1;
   private vd = 1;
 
+  // private backgroundColor: RGB = [255, 255, 255];
   private backgroundColor: RGB = [0, 0, 0];
   private imageData: ImageData;
 
@@ -129,10 +159,10 @@ export class Renderer {
     tMax: number,
     recursionDepth = 3
   ): RGB {
-    let { closestIntersection: closestSphere, closestT }: ClosestIntersection =
+    let { closestIntersection, closestT, closestNormal }: ClosestIntersection =
       this.closestIntersection(origin, viewportPoint, tMin, tMax);
 
-    if (closestSphere == null) {
+    if (closestIntersection == null || closestNormal == null) {
       return this.backgroundColor;
     }
 
@@ -141,28 +171,25 @@ export class Renderer {
       this.multiplyByScalar(viewportPoint, closestT)
     ) as Vector3;
 
-    let normal = this.subtract(intersection, closestSphere.C);
-    normal = this.multiplyByScalar(normal, 1 / this.length(normal));
-
     const negativeViewportPoint = this.multiplyByScalar(viewportPoint, -1);
 
     const color = this.multiplyByScalar(
-      closestSphere.color,
+      closestIntersection.color,
       this.computeLighting(
         intersection,
-        normal,
+        closestNormal,
         negativeViewportPoint,
-        closestSphere.specular
+        closestIntersection.specular
       )
     );
 
     // recursion limit
-    const r = closestSphere.reflective;
+    const r = closestIntersection.reflective;
     if (recursionDepth <= 0 || r <= 0) {
       return color;
     }
 
-    const nextRay = this.reflectRay(negativeViewportPoint, normal);
+    const nextRay = this.reflectRay(negativeViewportPoint, closestNormal);
     const reflectedColor = this.traceRay(
       intersection,
       nextRay,
@@ -184,7 +211,8 @@ export class Renderer {
     tMax: number
   ): ClosestIntersection {
     let closestT = Infinity;
-    let closestSphere: Sphere | null = null;
+    let closestIntersection: Sphere | Triangle | null = null;
+    let closestNormal: Vector3 | null = null;
 
     for (let sphere of this.scene.spheres) {
       // ray can intersect sphere in 0, 1 or 2 points P1 = (O + t1D), P2 = (O + t2D)
@@ -192,11 +220,32 @@ export class Renderer {
       for (let t of intersects) {
         if (t > tMin && t < tMax && t < closestT) {
           closestT = t;
-          closestSphere = sphere;
+          closestIntersection = sphere;
+
+          const intersection = this.add(
+            origin,
+            this.multiplyByScalar(viewportPoint, closestT)
+          ) as Vector3;
+
+          const n = this.subtract(intersection, closestIntersection.C);
+          closestNormal = this.multiplyByScalar(n, 1 / this.length(n));
         }
       }
     }
-    return { closestIntersection: closestSphere, closestT };
+
+    for (let triangle of this.scene.triangles) {
+      const [t, normal] = this.intersectRayTriangle(
+        origin,
+        viewportPoint,
+        triangle
+      );
+      if (t != null && t > tMin && t < tMax && t < closestT) {
+        closestT = t;
+        closestIntersection = triangle;
+        closestNormal = normal;
+      }
+    }
+    return { closestIntersection, closestT, closestNormal };
   }
 
   intersectRaySphere(
@@ -221,6 +270,62 @@ export class Renderer {
     const t2 = (-b - Math.sqrt(discriminant)) / (2 * a);
 
     return [t1, t2];
+  }
+
+  intersectRayTriangle(
+    origin: Vector3,
+    viewportPoint: Vector3,
+    triangle: Triangle
+  ): [number | null, Vector3 | null] {
+    const cross = this.cross(
+      this.subtract(triangle.b, triangle.a),
+      this.subtract(triangle.c, triangle.a)
+    );
+    const normal = this.multiplyByScalar(cross, 1 / this.length(cross));
+
+    const nDotD = this.dot(normal, viewportPoint);
+    if (nDotD == 0) {
+      return [null, null];
+    }
+    const AO = this.subtract(origin, triangle.a);
+    const NDotPO = this.dot(normal, AO);
+
+    const t = -1 * (NDotPO / nDotD);
+    if (t < 0) {
+      return [null, null];
+    }
+
+    const P = this.add(origin, this.multiplyByScalar(viewportPoint, t));
+
+    const AB = this.subtract(triangle.b, triangle.a);
+    const AC = this.subtract(triangle.c, triangle.a);
+    const AP = this.subtract(P, triangle.a);
+
+
+    // https://gamedev.stackexchange.com/a/23745
+    const dotAB = this.dot(AB, AB);
+    const dotABAC = this.dot(AB, AC);
+    const dotAC = this.dot(AC, AC);
+    const dotAPAB = this.dot(AP, AB);
+    const dotAPAC = this.dot(AP, AC);
+    const denom = dotAB * dotAC - dotABAC * dotABAC;
+    const alpha = (dotAC * dotAPAB - dotABAC * dotAPAC) / denom;
+    const beta = (dotAB * dotAPAC - dotABAC * dotAPAB) / denom;
+    const gamma = 1 - alpha - beta;
+
+    if (alpha < 0 || alpha > 1) {
+      return [null, null];
+    }
+
+    if (beta < 0 || beta > 1) {
+      return [null, null];
+    }
+
+    if (gamma < 0 || gamma > 1) {
+      return [null, null];
+    }
+
+    return [t, normal];
   }
 
   computeLighting(point: Vector3, normal: Vector3, v: Vector3, s: number) {
@@ -286,6 +391,18 @@ export class Renderer {
       throw new Error("[dot]: vectors have different length");
     }
     return v1.map((p, i) => p * v2[i]).reduce((acc, v) => acc + v, 0);
+  }
+
+  cross(v1: Vector3, v2: Vector3): Vector3 {
+    if (v1.length != v2.length) {
+      throw new Error("[cross]: vectors have different length");
+    }
+
+    return [
+      v1[1] * v2[2] - v1[2] * v2[1],
+      v1[2] * v2[0] - v1[0] * v2[2],
+      v1[0] * v2[1] - v1[1] * v2[0],
+    ];
   }
 
   add(v1: Vector3, v2: Vector3): Vector3 {
